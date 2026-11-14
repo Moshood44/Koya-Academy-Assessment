@@ -112,7 +112,7 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// POST /bookings (Level 2: validation & checks)
+// POST /bookings (Level 3: concurrency & conflict handling)
 app.post('/bookings', async (c) => {
   let body: any;
   try {
@@ -172,7 +172,10 @@ app.post('/bookings', async (c) => {
       status: row.status,
       created_at: new Date(row.created_at).toISOString(),
     }, 201);
-  } catch {
+  } catch (err: any) {
+    if (err && err.code === '23505') {
+      return c.json({ error: 'slot already booked' }, 409);
+    }
     return c.json({ error: 'internal error' }, 500);
   } finally {
     client.release();
@@ -201,6 +204,42 @@ app.get('/bookings/:id', async (c) => {
       status: row.status,
       created_at: new Date(row.created_at).toISOString(),
     }, 200);
+  } catch {
+    return c.json({ error: 'internal error' }, 500);
+  } finally {
+    client.release();
+  }
+});
+
+// DELETE /bookings/:id (Level 3: cancellation)
+app.delete('/bookings/:id', async (c) => {
+  const id = c.req.param('id');
+  const pool = getPool();
+  const client = await pool.connect();
+  try {
+    const res = await client.query(
+      "UPDATE bookings SET status = 'cancelled' WHERE id = $1 AND status = 'confirmed' RETURNING id, slot_id, name, email, status, created_at",
+      [id]
+    );
+
+    if (res.rows.length > 0) {
+      const row = res.rows[0];
+      return c.json({
+        id: row.id,
+        slot_id: row.slot_id,
+        name: row.name,
+        email: row.email,
+        status: row.status,
+        created_at: new Date(row.created_at).toISOString(),
+      }, 200);
+    }
+
+    // Zero rows updated: check if booking exists to decide 404 vs 409
+    const checkRes = await client.query('SELECT id, status FROM bookings WHERE id = $1', [id]);
+    if (checkRes.rows.length === 0) {
+      return c.json({ error: 'booking not found' }, 404);
+    }
+    return c.json({ error: 'booking already cancelled' }, 409);
   } catch {
     return c.json({ error: 'internal error' }, 500);
   } finally {
