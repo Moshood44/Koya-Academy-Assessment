@@ -108,7 +108,11 @@ app.get('/slots', async (c) => {
   }
 });
 
-// POST /bookings (Level 1 stub)
+function isValidEmail(email: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+// POST /bookings (Level 2: validation & checks)
 app.post('/bookings', async (c) => {
   let body: any;
   try {
@@ -117,18 +121,47 @@ app.post('/bookings', async (c) => {
     return c.json({ error: 'malformed body' }, 400);
   }
 
-  const { slot_id, name, email } = body || {};
-  if (!slot_id || !name || !email) {
-    return c.json({ error: 'missing fields' }, 400);
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return c.json({ error: 'malformed body' }, 400);
   }
+
+  const { slot_id, name, email } = body;
+
+  if (typeof slot_id !== 'string' || typeof name !== 'string' || typeof email !== 'string') {
+    return c.json({ error: 'slot_id, name, and email must be strings' }, 400);
+  }
+
+  const trimmedSlotId = slot_id.trim();
+  const trimmedName = name.trim();
+  const trimmedEmail = email.trim();
+
+  if (!trimmedSlotId || !trimmedName || !trimmedEmail) {
+    return c.json({ error: 'slot_id, name, and email must not be empty' }, 400);
+  }
+
+  if (!isValidEmail(trimmedEmail)) {
+    return c.json({ error: 'invalid email address' }, 400);
+  }
+
+  const normalizedEmail = trimmedEmail.toLowerCase();
 
   const pool = getPool();
   const client = await pool.connect();
   try {
+    const slotRes = await client.query('SELECT id, start FROM slots WHERE id = $1', [trimmedSlotId]);
+    if (slotRes.rows.length === 0) {
+      return c.json({ error: 'slot not found' }, 404);
+    }
+
+    const slotStart = new Date(slotRes.rows[0].start);
+    if (slotStart <= new Date()) {
+      return c.json({ error: 'slot has already started' }, 400);
+    }
+
     const bookingId = crypto.randomUUID();
     const res = await client.query(
       'INSERT INTO bookings (id, slot_id, name, email, status) VALUES ($1, $2, $3, $4, $5) RETURNING id, slot_id, name, email, status, created_at',
-      [bookingId, slot_id, name, email, 'confirmed']
+      [bookingId, trimmedSlotId, trimmedName, normalizedEmail, 'confirmed']
     );
     const row = res.rows[0];
     return c.json({
