@@ -105,6 +105,7 @@ app.get('/slots', async (c) => {
           s.start_raw, 
           s.end_raw, 
           s.start,
+          s."end",
           CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
         FROM slots s
         LEFT JOIN bookings b ON s.id = b.slot_id AND b.status = 'confirmed'
@@ -120,8 +121,8 @@ app.get('/slots', async (c) => {
       const slots = res.rows.map((r: any) => ({
         id: r.id,
         provider: r.provider,
-        start: r.start_raw || r.start.toISOString(),
-        end: r.end_raw || r.end.toISOString(),
+        start: r.start_raw || (r.start ? new Date(r.start).toISOString() : ''),
+        end: r.end_raw || (r.end ? new Date(r.end).toISOString() : ''),
         available: r.available,
       }));
 
