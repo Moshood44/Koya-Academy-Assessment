@@ -1,0 +1,31 @@
+{
+  "name": "koya-academy-assessment",
+  "version": "1.0.0",
+  "description": "A hospital booking API",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Moshood44/Koya-Academy-Assessment.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Moshood44/Koya-Academy-Assessment/issues"
+  },
+  "homepage": "https://github.com/Moshood44/Koya-Academy-Assessment#readme",
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "hono": "^4.13.18",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
