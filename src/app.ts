@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getPool } from './db.js';
 import crypto from 'node:crypto';
+import pg from 'pg';
 
 export const app = new Hono();
 
@@ -112,8 +113,12 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// POST /bookings (Level 4: Idempotency support)
+// POST /bookings (Levels 1 to 5)
+// Order: auth, parse JSON, idempotency lookup, rate limit, field validation, slot exists, slot not started, insert (409 on conflict), store idempotent response.
 app.post('/bookings', async (c) => {
+  // 1. Auth handled in middleware
+
+  // 2. Parse JSON
   const rawBodyText = await c.req.text();
   let body: any;
   try {
@@ -122,6 +127,7 @@ app.post('/bookings', async (c) => {
     return c.json({ error: 'malformed body' }, 400);
   }
 
+  // 3. Idempotency lookup
   const rawIdemKey = c.req.header('Idempotency-Key');
   const idemKey = rawIdemKey && rawIdemKey.trim() !== '' ? rawIdemKey.trim() : null;
   const pool = getPool();
@@ -175,7 +181,67 @@ app.post('/bookings', async (c) => {
     }
   }
 
-  // Execute booking with idempotency storage
+  // 4. Rate limit check (Level 5)
+  // Key the limit on the trimmed, lower-cased email whenever the email is a non-empty string.
+  let rateLimitEmail: string | null = null;
+  if (body && typeof body === 'object' && !Array.isArray(body) && typeof body.email === 'string') {
+    const trimmed = body.email.trim();
+    if (trimmed.length > 0) {
+      rateLimitEmail = trimmed.toLowerCase();
+    }
+  }
+
+  if (rateLimitEmail) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const escapedEmail = pg.escapeLiteral(rateLimitEmail);
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext(${escapedEmail}))`);
+
+      const now = new Date();
+      const windowStart = new Date(now.getTime() - 60000);
+
+      const attemptsRes = await client.query(
+        'SELECT attempted_at FROM rate_limit_attempts WHERE email = $1 AND attempted_at >= $2 ORDER BY attempted_at ASC',
+        [rateLimitEmail, windowStart.toISOString()]
+      );
+
+      if (attemptsRes.rows.length >= 5) {
+        const oldestAttempt = new Date(attemptsRes.rows[0].attempted_at);
+        const expiresAt = oldestAttempt.getTime() + 60000;
+        const diffMs = expiresAt - now.getTime();
+        const retryAfter = Math.max(1, Math.ceil(diffMs / 1000));
+
+        await client.query('COMMIT');
+
+        // Clean up uncompleted idempotency key so it is not stuck
+        if (idemKey) {
+          await pool.query('DELETE FROM idempotency_keys WHERE key = $1', [idemKey]);
+        }
+
+        return new Response(JSON.stringify({ error: 'too many requests' }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': retryAfter.toString(),
+          },
+        });
+      }
+
+      await client.query('INSERT INTO rate_limit_attempts (email, attempted_at) VALUES ($1, $2)', [rateLimitEmail, now.toISOString()]);
+      await client.query('COMMIT');
+    } catch {
+      await client.query('ROLLBACK').catch(() => {});
+      if (idemKey) {
+        await pool.query('DELETE FROM idempotency_keys WHERE key = $1', [idemKey]);
+      }
+      return c.json({ error: 'internal error' }, 500);
+    } finally {
+      client.release();
+    }
+  }
+
+  // 5. Field validation & 6. Slot checks & 7. Insert
   const executeBooking = async () => {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
       return { status: 400, body: { error: 'malformed body' } };
@@ -241,6 +307,7 @@ app.post('/bookings', async (c) => {
   try {
     const outcome = await executeBooking();
 
+    // 8. Store idempotent response
     if (idemKey) {
       const client = await pool.connect();
       try {
