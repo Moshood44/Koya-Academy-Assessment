@@ -39,7 +39,8 @@ app.get('/', (c) => {
     c.header('Content-Type', 'text/html; charset=utf-8');
     c.header('Cache-Control', 'no-store');
     return c.html(html);
-  } catch (err) {
+  } catch (err: any) {
+    console.error('Template read error:', err.message);
     return c.text('Template not found', 500);
   }
 });
@@ -81,7 +82,8 @@ app.post('/reset', async (c) => {
 
     await client.query('COMMIT');
     return c.json({ ok: true }, 200);
-  } catch (err) {
+  } catch (err: any) {
+    console.error('Reset error:', err.message, err.stack);
     await client.query('ROLLBACK').catch(() => {});
     return c.json({ error: 'internal error' }, 500);
   } finally {
@@ -93,40 +95,43 @@ app.post('/reset', async (c) => {
 app.get('/slots', async (c) => {
   const provider = c.req.query('provider');
   const pool = getPool();
-  const client = await pool.connect();
   try {
-    let query = `
-      SELECT 
-        s.id, 
-        s.provider, 
-        s.start_raw, 
-        s.end_raw, 
-        s.start,
-        CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
-      FROM slots s
-      LEFT JOIN bookings b ON s.id = b.slot_id AND b.status = 'confirmed'
-    `;
-    const params: any[] = [];
-    if (provider !== undefined) {
-      query += ' WHERE s.provider = $1';
-      params.push(provider);
+    const client = await pool.connect();
+    try {
+      let query = `
+        SELECT 
+          s.id, 
+          s.provider, 
+          s.start_raw, 
+          s.end_raw, 
+          s.start,
+          CASE WHEN b.id IS NOT NULL THEN false ELSE true END AS available
+        FROM slots s
+        LEFT JOIN bookings b ON s.id = b.slot_id AND b.status = 'confirmed'
+      `;
+      const params: any[] = [];
+      if (provider !== undefined) {
+        query += ' WHERE s.provider = $1';
+        params.push(provider);
+      }
+      query += ' ORDER BY s.start ASC';
+
+      const res = await client.query(query, params);
+      const slots = res.rows.map((r: any) => ({
+        id: r.id,
+        provider: r.provider,
+        start: r.start_raw || r.start.toISOString(),
+        end: r.end_raw || r.end.toISOString(),
+        available: r.available,
+      }));
+
+      return c.json({ slots }, 200);
+    } finally {
+      client.release();
     }
-    query += ' ORDER BY s.start ASC';
-
-    const res = await client.query(query, params);
-    const slots = res.rows.map((r: any) => ({
-      id: r.id,
-      provider: r.provider,
-      start: r.start_raw || r.start.toISOString(),
-      end: r.end_raw || r.end.toISOString(),
-      available: r.available,
-    }));
-
-    return c.json({ slots }, 200);
-  } catch (err) {
+  } catch (err: any) {
+    console.error('Slots error:', err.message, err.stack);
     return c.json({ error: 'internal error' }, 500);
-  } finally {
-    client.release();
   }
 });
 
@@ -135,11 +140,7 @@ function isValidEmail(email: string): boolean {
 }
 
 // POST /bookings (Levels 1 to 5)
-// Order: auth, parse JSON, idempotency lookup, rate limit, field validation, slot exists, slot not started, insert (409 on conflict), store idempotent response.
 app.post('/bookings', async (c) => {
-  // 1. Auth handled in middleware
-
-  // 2. Parse JSON
   const rawBodyText = await c.req.text();
   let body: any;
   try {
@@ -148,7 +149,6 @@ app.post('/bookings', async (c) => {
     return c.json({ error: 'malformed body' }, 400);
   }
 
-  // 3. Idempotency lookup
   const rawIdemKey = c.req.header('Idempotency-Key');
   const idemKey = rawIdemKey && rawIdemKey.trim() !== '' ? rawIdemKey.trim() : null;
   const pool = getPool();
@@ -167,7 +167,6 @@ app.post('/bookings', async (c) => {
       winner = (insRes.rowCount ?? 0) > 0;
 
       if (!winner) {
-        // Loser: check hash
         const existingRes = await client.query('SELECT request_hash, status_code, response_body FROM idempotency_keys WHERE key = $1', [idemKey]);
         if (existingRes.rows.length > 0) {
           const row = existingRes.rows[0];
@@ -179,7 +178,6 @@ app.post('/bookings', async (c) => {
           }
         }
 
-        // Poll briefly for completed response
         let completedRow = null;
         for (let i = 0; i < 25; i++) {
           await new Promise((r) => setTimeout(r, 200));
@@ -195,15 +193,14 @@ app.post('/bookings', async (c) => {
         }
         return c.json({ error: 'internal error' }, 500);
       }
-    } catch {
+    } catch (err: any) {
+      console.error('Idempotency error:', err.message);
       return c.json({ error: 'internal error' }, 500);
     } finally {
       client.release();
     }
   }
 
-  // 4. Rate limit check (Level 5)
-  // Key the limit on the trimmed, lower-cased email whenever the email is a non-empty string.
   let rateLimitEmail: string | null = null;
   if (body && typeof body === 'object' && !Array.isArray(body) && typeof body.email === 'string') {
     const trimmed = body.email.trim();
@@ -235,7 +232,6 @@ app.post('/bookings', async (c) => {
 
         await client.query('COMMIT');
 
-        // Clean up uncompleted idempotency key so it is not stuck
         if (idemKey) {
           await pool.query('DELETE FROM idempotency_keys WHERE key = $1', [idemKey]);
         }
@@ -251,7 +247,8 @@ app.post('/bookings', async (c) => {
 
       await client.query('INSERT INTO rate_limit_attempts (email, attempted_at) VALUES ($1, $2)', [rateLimitEmail, now.toISOString()]);
       await client.query('COMMIT');
-    } catch {
+    } catch (err: any) {
+      console.error('Rate limit error:', err.message);
       await client.query('ROLLBACK').catch(() => {});
       if (idemKey) {
         await pool.query('DELETE FROM idempotency_keys WHERE key = $1', [idemKey]);
@@ -262,7 +259,6 @@ app.post('/bookings', async (c) => {
     }
   }
 
-  // 5. Field validation & 6. Slot checks & 7. Insert
   const executeBooking = async () => {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
       return { status: 400, body: { error: 'malformed body' } };
@@ -319,6 +315,7 @@ app.post('/bookings', async (c) => {
       if (err && err.code === '23505') {
         return { status: 409, body: { error: 'slot already booked' } };
       }
+      console.error('Insert booking error:', err.message);
       return { status: 500, body: { error: 'internal error' } };
     } finally {
       client.release();
@@ -328,7 +325,6 @@ app.post('/bookings', async (c) => {
   try {
     const outcome = await executeBooking();
 
-    // 8. Store idempotent response
     if (idemKey) {
       const client = await pool.connect();
       try {
@@ -346,7 +342,8 @@ app.post('/bookings', async (c) => {
     }
 
     return c.json(outcome.body, outcome.status as any);
-  } catch (err) {
+  } catch (err: any) {
+    console.error('Booking outcome error:', err.message);
     if (idemKey) {
       const client = await pool.connect();
       try {
@@ -433,7 +430,8 @@ app.get('/bookings', async (c) => {
       : null;
 
     return c.json({ bookings, next_cursor }, 200);
-  } catch {
+  } catch (err: any) {
+    console.error('List bookings error:', err.message);
     return c.json({ error: 'internal error' }, 500);
   } finally {
     client.release();
@@ -462,7 +460,8 @@ app.get('/bookings/:id', async (c) => {
       status: row.status,
       created_at: new Date(row.created_at).toISOString(),
     }, 200);
-  } catch {
+  } catch (err: any) {
+    console.error('Get booking error:', err.message);
     return c.json({ error: 'internal error' }, 500);
   } finally {
     client.release();
@@ -497,7 +496,8 @@ app.delete('/bookings/:id', async (c) => {
       return c.json({ error: 'booking not found' }, 404);
     }
     return c.json({ error: 'booking already cancelled' }, 409);
-  } catch {
+  } catch (err: any) {
+    console.error('Delete booking error:', err.message);
     return c.json({ error: 'internal error' }, 500);
   } finally {
     client.release();
@@ -511,5 +511,6 @@ app.notFound((c) => {
 
 // Error handler
 app.onError((err, c) => {
+  console.error('Global onError:', err.message, err.stack);
   return c.json({ error: 'internal error' }, 500);
 });
