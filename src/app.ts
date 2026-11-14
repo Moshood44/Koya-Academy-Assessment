@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { getPool } from './db.js';
 import crypto from 'node:crypto';
 import pg from 'pg';
+import fs from 'node:fs';
+import path from 'node:path';
 
 export const app = new Hono();
 
@@ -18,9 +20,28 @@ app.use('*', async (c, next) => {
   return next();
 });
 
-// GET / returns 404 for now
+// GET /: Serves the React single-page app with injected API key
 app.get('/', (c) => {
-  return c.json({ error: 'not found' }, 404);
+  try {
+    const templatePath = path.resolve(process.cwd(), 'dist', 'template.html');
+    let html = fs.readFileSync(templatePath, 'utf8');
+
+    const apiKey = process.env.API_KEY || '';
+    const escapedApiKey = JSON.stringify(apiKey);
+    const scriptTag = `<script>window.__API_KEY__=${escapedApiKey};</script>`;
+
+    if (html.includes('<!--API_KEY_SCRIPT-->')) {
+      html = html.replace('<!--API_KEY_SCRIPT-->', scriptTag);
+    } else {
+      html = html.replace('</head>', `${scriptTag}</head>`);
+    }
+
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    c.header('Cache-Control', 'no-store');
+    return c.html(html);
+  } catch (err) {
+    return c.text('Template not found', 500);
+  }
 });
 
 // POST /reset (Level 1)
