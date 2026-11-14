@@ -231,6 +231,32 @@ export default function App() {
         </button>
       </div>
 
+      {/* Summary Docs Section */}
+      <section className="docs-card">
+        <h2 className="docs-title">API & System Summary</h2>
+        <p className="docs-intro">
+          This system provides an end-to-end clinic scheduling service adhering to OpenAPI 3.0 standards:
+        </p>
+        <div className="docs-grid">
+          <div className="doc-item">
+            <strong>1. Authentication</strong>
+            <p>All endpoints require the <code>X-API-Key</code> header matching the clinic key above.</p>
+          </div>
+          <div className="doc-item">
+            <strong>2. Reset & Sync</strong>
+            <p><code>POST /reset</code> cleanly purges and reseeds slots, bookings, and rate limits atomically.</p>
+          </div>
+          <div className="doc-item">
+            <strong>3. Concurrency Protection</strong>
+            <p>Simultaneous booking requests for the same slot return exactly one <code>201</code> and all others <code>409</code>.</p>
+          </div>
+          <div className="doc-item">
+            <strong>4. Idempotency & Rate Limits</strong>
+            <p><code>Idempotency-Key</code> header prevents duplicate bookings. Capped at 5 attempts/min per email (returns <code>429</code> with <code>Retry-After</code>).</p>
+          </div>
+        </div>
+      </section>
+
       {/* Confirmation Card */}
       {confirmedBooking && (
         <div className="confirm-card">
